@@ -95,7 +95,6 @@ from typing import Optional, Tuple
 import jwt
 import requests
 
-from insig.logging.logger import Logger
 from jwt.algorithms import RSAAlgorithm
 
 from app.config import config
@@ -120,7 +119,6 @@ class UserAuthService:
             response.raise_for_status()
             return response.text
         except Exception as exc:
-            logger.warning("Auth Failed: Invalid public key %s", str(exc))
             return None
 
     def find_public_key(self, kid: str) -> Tuple[bool, Optional[dict]]:
@@ -128,7 +126,6 @@ class UserAuthService:
         url = f"https://cognito-idp.{auth.region}.amazonaws.com/{auth.identity_pool_id}/.well-known/jwks.json"
         public_keys = self.get_public_access_keys(url)
         if not public_keys:
-            logger.warning("Auth Failed: Invalid cognito public key")
             return False, {}
 
         public_keys = json.loads(public_keys)
@@ -155,7 +152,6 @@ class UserAuthService:
                 issuer=f"https://cognito-idp.{config.auth.region}.amazonaws.com/{config.auth.identity_pool_id}",
             )
         except jwt.exceptions.DecodeError as exc:
-            logger.warning("Auth Failed - JWT DecodeError: %s", str(exc))
             return False, {}
 
         # This should be check if token_use is ID token and "verify_aud" in jwt decode
@@ -178,13 +174,11 @@ class UserAuthService:
             f"loadbalancer/app/{auth.load_balancer_name}/{auth.load_balancer_id}"
         )
         if not headers.get("signer") == expected_signer:
-            logger.warning("Auth Failed: Invalid ALB signer")
             return False
 
         url = f'https://public-keys.auth.elb.{auth.region}.amazonaws.com/{headers.get("kid")}'
         public_key = self.get_public_access_keys(url)
         if not public_key:
-            logger.warning("Auth Failed: Invalid ALB public key")
             return False
 
         expected_issuer = f"https://cognito-idp.{config.auth.region}.amazonaws.com/{config.auth.identity_pool_id}"
@@ -212,7 +206,6 @@ class UserAuthService:
             headers = jwt.get_unverified_header(access_token)
             valid_pub_key, user_public_key = self.find_public_key(headers.get("kid"))
             if not user_public_key:
-                logger.warning("Auth Failed: Key not found")
                 return False, None, None
 
             valid_signature, payload = self.decode_access_token(user_public_key, access_token, headers.get("alg"))
@@ -221,7 +214,7 @@ class UserAuthService:
                 user_sub_id = payload.get("sub")
                 current_user = User.find_by(guid=user_sub_id) if user_sub_id else None
         except Exception as exc:
-            logger.warning("Auth Failed: %s", str(exc))
+            pass
 
         return valid_token, current_user
 ```

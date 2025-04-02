@@ -451,3 +451,19 @@ class UserPolicy:
 
 	...
 ```
+
+## Regex
+
+### Remove file size from string
+
+```py
+def remove_filesize_str(txt: str) -> str:
+		if not txt:
+				return txt
+
+		patt = r"(^|\s|\,|\:|\/|\(|\[)?\s*\d+[\.|\,]?\d*\s*((G|T|M|K)((?!G|T|M|K)B|O)|bytes)\s*(?=$|\s|\)|\]|(?!\w|\d))(\s|\)|\])?"
+		cleaned_txt = re.sub(patt, " ", txt, flags=re.IGNORECASE)
+		cleaned_txt = re.sub(r"\s\s*", " ", cleaned_txt).strip()
+		return cleaned_txt
+
+```
