@@ -129,6 +129,29 @@ class TestClsName:
 
 ```
 
+```py
+class MockOpenAiResponse:
+    def __init__(self, json_data, status_code, headers=None, request=None, raise_for_status=None):
+        self.json_data = json_data
+        self.status_code = status_code
+        self.headers = headers if headers else {}
+        self.request = request if request else MagicMock()
+        self.raise_for_status = raise_for_status if raise_for_status else MagicMock()
+
+    def json(self, db):
+        return self.json_data
+
+
+with patch("path.to.openai_client") as mock_client:
+		mock_client.return_value = MagicMock()
+		mock_client.chat.completions.create.side_effect = openai.BadRequestError(
+				message="error message",
+				response=MockOpenAiResponse({"error": "error"}, 400),
+				body={"message": "BadRequestError"},
+		)
+
+```
+
 **Mock response with raise_for_status**
 
 ```py

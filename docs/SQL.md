@@ -390,3 +390,338 @@ VALUES
 ON CONFLICT (name)
 DO UPDATE SET username = EXCLUDED.username, tel = EXCLUDED.tel;
 ```
+
+### Closure table
+
+```SQL
+CREATE TABLE companies (
+    id uuid PRIMARY KEY NOT NULL DEFAULT uuid_generate_v4(),
+    name VARCHAR UNIQUE NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE
+);
+
+CREATE TABLE departments (
+    id uuid PRIMARY KEY NOT NULL DEFAULT uuid_generate_v4(),
+    name VARCHAR NOT NULL,
+    company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    code VARCHAR(255) DEFAULT NULL::character varying,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE
+);
+
+CREATE UNIQUE INDEX departments_name_key ON public.departments USING btree (name);
+CREATE UNIQUE INDEX departments_unique ON public.departments USING btree (name, company_id);
+
+CREATE TABLE IF NOT EXISTS closure_tbl (
+   ancestor_id UUID NOT NULL,
+   descendant_id UUID NOT NULL,
+   depth INT NOT NULL,
+   PRIMARY KEY (ancestor_id, descendant_id),
+   FOREIGN KEY (ancestor_id) REFERENCES departments(id),
+   FOREIGN KEY (descendant_id) REFERENCES departments(id)
+);
+
+CREATE INDEX IF NOT EXISTS closure_tbl_ancestor_depth_idx ON closure_tbl (ancestor_id, depth);
+CREATE INDEX IF NOT EXISTS closure_tbl_descendant_idx ON closure_tbl (descendant_id);
+
+-- Get all departments as tree/descendants with top level (main) as row entry
+CREATE OR REPLACE FUNCTION get_departments_tree()
+RETURNS TABLE (
+    id UUID,
+    name VARCHAR,
+    company_id UUID,
+    company_name VARCHAR,
+    descendants JSONB
+) AS $$
+BEGIN
+   RETURN QUERY
+   WITH RECURSIVE descendants AS (
+      SELECT
+         cd.id,
+         cd.name,
+         cd.company_id,
+         cd.company_name,
+         ct.depth,
+         ct.ancestor_id AS root_id,
+         ct.ancestor_id AS parent_id
+      FROM closure_tbl ct
+      INNER JOIN company_departments cd ON cd.id = ct.descendant_id
+      WHERE ct.depth = 1
+
+      UNION ALL
+
+      SELECT
+         child.id,
+         child.name,
+         child.company_id,
+         child.company_name,
+         parent.depth + 1 AS depth,
+         parent.root_id,
+         parent.id AS parent_id
+      FROM descendants parent
+      INNER JOIN closure_tbl ct ON ct.ancestor_id = parent.id AND ct.depth = 1
+      INNER JOIN company_departments child ON child.id = ct.descendant_id
+   ),
+   company_departments AS (
+   	SELECT
+         depts.id,
+         depts.name,
+         depts.company_id,
+         c.name AS company_name
+      FROM departments depts
+      INNER JOIN companies c ON c.id = depts.company_id
+   ),
+   json_descendants AS (
+      SELECT
+         d.id,
+         d.name,
+         d.company_id,
+         d.company_name,
+         d.parent_id,
+         d.root_id,
+         jsonb_build_object(
+               'id', d.id,
+               'name', d.name,
+               'company_id', d.company_id,
+               'company_name', d.company_name,
+               'children', '[]'::jsonb
+         ) AS children
+      FROM descendants d
+   ),
+   nested_json_descendants AS (
+      SELECT
+         jd.id,
+         jd.parent_id,
+         jd.root_id,
+         jd.company_id,
+         jd.company_name,
+         jd.children || jsonb_build_object(
+               'children',
+               COALESCE(
+                  jsonb_agg(jd2.children ORDER BY jd2.name) FILTER (WHERE jd2.children IS NOT NULL),
+                  '[]'::jsonb)
+         ) AS children
+      FROM json_descendants jd
+      LEFT JOIN json_descendants jd2 ON jd2.parent_id = jd.id
+      GROUP BY jd.id, jd.company_id, jd.company_name, jd.parent_id, jd.children, jd.root_id
+   ),
+   grouped_descendants AS (
+      SELECT
+         njd.root_id,
+         njd.company_id,
+         njd.company_name,
+         jsonb_agg(njd.children ORDER BY njd.children ->> 'name') AS children
+      FROM nested_json_descendants njd
+      WHERE njd.parent_id = njd.root_id
+      GROUP BY njd.root_id, njd.company_id, njd.company_name
+   )
+   SELECT
+      cd.id,
+      cd.name,
+      cd.company_id,
+      cd.company_name,
+      COALESCE(gd.children, '[]'::jsonb) AS "descendants"
+   FROM company_departments cd
+   INNER JOIN closure_tbl ct ON cd.id = ct.descendant_id AND ct.depth = 0
+   LEFT JOIN grouped_descendants gd ON gd.root_id = cd.id
+   ORDER BY 4, 2;
+END;
+$$ LANGUAGE plpgsql STABLE;
+
+
+-- GET by company ID
+CREATE OR REPLACE FUNCTION get_departments_tree_by_company(cid uuid)
+RETURNS TABLE (
+    id UUID,
+    name VARCHAR,
+    descendants JSONB
+) AS $$
+BEGIN
+   RETURN QUERY
+   WITH RECURSIVE descendants AS (
+      SELECT
+         cd.id,
+         cd.name,
+         ct.depth,
+         ct.ancestor_id AS root_id,
+         ct.ancestor_id AS parent_id
+      FROM closure_tbl ct
+      INNER JOIN company_departments cd ON cd.id = ct.descendant_id
+      WHERE ct.depth = 1
+
+      UNION ALL
+
+      SELECT
+         child.id,
+         child.name,
+         parent.depth + 1 AS depth,
+         parent.root_id,
+         parent.id AS parent_id
+      FROM descendants parent
+      INNER JOIN closure_tbl ct ON ct.ancestor_id = parent.id AND ct.depth = 1
+      INNER JOIN company_departments child ON child.id = ct.descendant_id
+   ),
+   company_departments AS (
+   	SELECT
+         depts.id,
+         depts.name
+      FROM departments depts
+      INNER JOIN companies c ON c.id = depts.company_id
+      WHERE c.id = cid
+   ),
+   json_descendants AS (
+      SELECT
+         d.id,
+         d.name,
+         d.parent_id,
+         d.root_id,
+         jsonb_build_object(
+               'id', d.id,
+               'name', d.name,
+               'children', '[]'::jsonb
+         ) AS children
+      FROM descendants d
+   ),
+   nested_json_descendants AS (
+      SELECT
+         jd.id,
+         jd.parent_id,
+         jd.root_id,
+         jd.children || jsonb_build_object(
+               'children',
+               COALESCE(
+                  jsonb_agg(jd2.children ORDER BY jd2.name) FILTER (WHERE jd2.children IS NOT NULL),
+                  '[]'::jsonb)
+         ) AS children
+      FROM json_descendants jd
+      LEFT JOIN json_descendants jd2 ON jd2.parent_id = jd.id
+      GROUP BY jd.id, jd.parent_id, jd.children, jd.root_id
+   ),
+   grouped_descendants AS (
+      SELECT
+         njd.root_id,
+         jsonb_agg(njd.children ORDER BY njd.children ->> 'name') AS children
+      FROM nested_json_descendants njd
+      WHERE njd.parent_id = njd.root_id
+      GROUP BY njd.root_id
+   )
+   SELECT
+      cd.id,
+      cd.name,
+      COALESCE(gd.children, '[]'::jsonb) AS "descendants"
+   FROM company_departments cd
+   INNER JOIN closure_tbl ct ON cd.id = ct.descendant_id AND ct.depth = 0
+   LEFT JOIN grouped_descendants gd ON gd.root_id = cd.id
+   ORDER BY 2;
+END;
+$$ LANGUAGE plpgsql STABLE;
+
+
+-- Get all departments as tree/descendants and group by company
+CREATE OR REPLACE FUNCTION get_departments_tree_grouped_by_company_name()
+RETURNS TABLE (
+    company_id UUID,
+    company_name VARCHAR,
+    depatments JSONB
+) AS $$
+BEGIN
+   RETURN QUERY
+   WITH RECURSIVE descendants AS (
+      SELECT
+         cd.id,
+         cd.name,
+         cd.company_id,
+         cd.company_name,
+         ct.depth,
+         ct.ancestor_id AS root_id,
+         ct.ancestor_id AS parent_id
+      FROM closure_tbl ct
+      INNER JOIN company_departments cd ON cd.id = ct.descendant_id
+      WHERE ct.depth = 1
+
+      UNION ALL
+
+      SELECT
+         child.id,
+         child.name,
+         child.company_id,
+         child.company_name,
+         parent.depth + 1 AS depth,
+         parent.root_id,
+         parent.id AS parent_id
+      FROM descendants parent
+      INNER JOIN closure_tbl ct ON ct.ancestor_id = parent.id AND ct.depth = 1
+      INNER JOIN company_departments child ON child.id = ct.descendant_id
+   ),
+   company_departments AS (
+   	SELECT
+         depts.id,
+         depts.name,
+         depts.company_id,
+         c.name AS company_name
+      FROM departments depts
+      INNER JOIN companies c ON c.id = depts.company_id
+   ),
+   json_descendants AS (
+      SELECT
+         d.id,
+         d.name,
+         d.company_id,
+         d.company_name,
+         d.parent_id,
+         d.root_id,
+         jsonb_build_object(
+               'id', d.id,
+               'name', d.name,
+               'company_id', d.company_id,
+               'company_name', d.company_name,
+               'children', '[]'::jsonb
+         ) AS children
+      FROM descendants d
+   ),
+   nested_json_descendants AS (
+      SELECT
+         jd.id,
+         jd.parent_id,
+         jd.root_id,
+         jd.company_id,
+         jd.company_name,
+         jd.children || jsonb_build_object(
+               'children',
+               COALESCE(
+                  jsonb_agg(jd2.children ORDER BY jd2.name) FILTER (WHERE jd2.children IS NOT NULL),
+                  '[]'::jsonb)
+         ) AS children
+      FROM json_descendants jd
+      LEFT JOIN json_descendants jd2 ON jd2.parent_id = jd.id
+      GROUP BY jd.id, jd.company_id, jd.company_name, jd.parent_id, jd.children, jd.root_id
+   ),
+   grouped_descendants AS (
+      SELECT
+         njd.root_id,
+         njd.company_id,
+         njd.company_name,
+         jsonb_agg(njd.children ORDER BY njd.children ->> 'name') AS children
+      FROM nested_json_descendants njd
+      WHERE njd.parent_id = njd.root_id
+      GROUP BY njd.root_id, njd.company_id, njd.company_name
+   )
+   SELECT
+      cd.company_id,
+      cd.company_name,
+      jsonb_agg(
+      	jsonb_build_object(
+	      	'id', cd.id,
+	 		   'departments', cd.name,
+	 		   'descendants', COALESCE(gd.children, '[]'::jsonb)
+	      ) ORDER BY cd.name
+	  ) AS departments
+   FROM company_departments cd
+   INNER JOIN closure_tbl ct ON cd.id = ct.descendant_id AND ct.depth = 0
+   LEFT JOIN grouped_descendants gd ON gd.root_id = cd.id
+   GROUP BY cd.company_name, cd.company_id
+   ORDER BY cd.company_name;
+END;
+$$ LANGUAGE plpgsql STABLE;
+```
