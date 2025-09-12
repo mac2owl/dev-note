@@ -57,3 +57,26 @@ EavFlattener().flatten_eav_table(data)
 # [{'user_id': 1, 'background-color': 'blue', 'color': '#3e3e3e', 'font-size': '12px'},
 #  {'user_id': 2, 'background-color': 'green', 'color': '#000000', 'font-size': '16px'}]
 ```
+
+## Parquet with selected columns
+
+```py
+
+import pandas as pd
+import pyarrow.parquet as pq
+
+parquet_file = pq.ParquetFile(file_name)
+selected_columns = [...]
+selected_columns = [col for col in selected_columns if col in parquet_file.schema.names]
+pq_filters =[("email", "in", user_emails), ("Year", "in", years)]
+df = pd.read_parquet(
+		file_name,
+		engine="pyarrow",
+		columns=selected_columns,
+		filters=pq_filters,
+)
+
+...
+
+
+```

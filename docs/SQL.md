@@ -269,7 +269,7 @@ $$;
 
 ### GENERATE_SERIES
 
-`GENERATE_SERIES` is pretty handy when creating time-series dataset
+`GENERATE_SERIES` - for creating time-series dataset
 
 ```SQL
 SELECT * FROM GENERATE_SERIES(2019, 2021, 1) AS "year", GENERATE_SERIES(1, 12, 1) AS "month";
@@ -724,4 +724,121 @@ BEGIN
    ORDER BY cd.company_name;
 END;
 $$ LANGUAGE plpgsql STABLE;
+```
+
+### Extract date parts, CTE, case statement, filter
+
+```SQL
+WITH month_data AS (
+   SELECT
+      EXTRACT(month FROM order_date)::int AS order_month,
+      EXTRACT(year FROM order_date)::int AS order_year,
+      currency,
+      order_type,
+      amount
+   FROM
+      orders
+   WHERE
+      order_type IN ('Type 1', 'Type 2')
+
+   UNION ALL
+
+   SELECT
+      EXTRACT(month FROM order_date)::int AS order_month,
+      EXTRACT(year FROM order_date)::int AS order_year,
+      'Local' AS currency,
+      order_type,
+      amount_base AS amount
+   FROM
+      orders
+   WHERE
+      order_type IN ('Type 1', 'Type 2')
+),
+quarter_data AS (
+   SELECT
+      CASE
+         WHEN order_month in (9,10) AND order_year = 2020 then 2021
+         WHEN order_month in (11,12) then order_year + 1
+         ELSE order_year
+      END AS order_yr,
+      CASE
+         WHEN order_month in (9,10) AND order_year = 2020 then 'Q1'
+         WHEN order_month in (11,12,1) then 'Q1'
+         WHEN order_month in (2,3,4) then 'Q2'
+         WHEN order_month in (5,6,7) then 'Q3'
+         WHEN order_month in (8,9,10) then 'Q4'
+      END AS order_quarter,
+      currency,
+      order_type,
+      SUM(amount) AS total
+   FROM month_data
+   GROUP BY 1, 2, 3, 4
+),
+year_data AS (
+   SELECT
+      order_year,
+      currency,
+      order_type,
+      SUM(amount) AS total
+   FROM month_data
+   GROUP BY 1, 2, 3
+)
+SELECT
+   order_yr AS year,
+   order_quarter AS quarter,
+   currency,
+   SUM(total) FILTER (WHERE order_type = 'Type 1') AS "Type 1",
+   SUM(total) FILTER (WHERE order_type = 'Type 2') AS "Type 2"
+FROM quarter_data
+GROUP BY 1,2,3
+
+UNION
+
+SELECT
+   order_year AS year,
+   NULL AS quarter,
+   currency,
+   SUM(total) FILTER (WHERE order_type = 'Type 1') AS "Type 1",
+   SUM(total) FILTER (WHERE order_type = 'Type 2') AS "Type 2"
+FROM year_data
+GROUP BY 1,2,3
+ORDER BY 1,2,3
+
+```
+
+### Table partition
+
+[Postgres doc example](https://www.postgresql.org/docs/current/ddl-partitioning.html#DDL-PARTITIONING-DECLARATIVE-EXAMPLE)
+
+```SQL
+CREATE TABLE orders (
+   id             UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+   order_date     DATE NOT NULL,
+   customer_id    UUID NOT NULL REFERENCES customers(id),
+   total          NUMERIC(10,2) NOT NULL
+) PARTITION BY RANGE (order_date);
+
+CREATE TABLE orders_2024 PARTITION OF orders FOR VALUES FROM ('2024-01-01') TO ('2025-01-01');
+CREATE TABLE orders_2025 PARTITION OF orders FOR VALUES FROM ('2025-01-01') TO ('2026-01-01');
+CREATE TABLE orders_default PARTITION OF orders DEFAULT;
+
+```
+
+### Row number, count etc over partition
+
+```SQL
+
+SELECT
+   id AS order_id,
+   customer_id,
+   ROW_NUMBER() OVER (
+      PARTITION BY customer_id
+      ORDER BY order_date DESC
+   ) AS rn,
+   COUNT(*) OVER (
+      PARTITION BY customer_id
+   ) AS kount
+FROM
+   order_data;
+
 ```

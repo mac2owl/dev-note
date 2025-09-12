@@ -16,8 +16,8 @@ from path.to.user_model import User
 from path.to.config import config
 
 
-class UserAuthService:
-    def get_current_user(self, access_token: str = None) -> Optional[User]:
+class AuthService:
+    def get_current_user(self, access_token: str = None) -> User | None:
         valid_token, current_user = self.validate_and_return_credentials(access_token)
         return current_user if (valid_token and current_user) else None
 
@@ -27,7 +27,7 @@ class UserAuthService:
         response = requests.get(url)
         return response.text
 
-    def find_public_key(self, kid: str) -> tuple[bool, Optional[dict]]:
+    def find_public_key(self, kid: str) -> tuple[bool, dict|None]:
         public_keys = self.get_public_access_keys()
         public_keys = json.loads(public_keys)
         public_keys = {key["kid"]: key for key in public_keys["keys"]}
@@ -64,7 +64,7 @@ class UserAuthService:
 
         return True, payload
 
-    def validate_and_return_credentials(self, access_token: str) -> tuple[bool, Optional[User]]:
+    def validate_and_return_credentials(self, access_token: str) -> tuple[bool, User|None]:
         valid_token, current_user = False, None
 
         try:
@@ -90,7 +90,7 @@ class UserAuthService:
 ```python
 import json
 
-from typing import Optional, Tuple
+from typing import Optional, tuple
 
 import jwt
 import requests
@@ -101,7 +101,7 @@ from app.config import config
 from path.to.user_model import User
 
 
-class UserAuthService:
+class AuthService:
     def get_current_user(self, access_token: str = None, data_token: str = None):
         is_valid_alb_token = self.verify_alb_token(data_token)
         if not is_valid_alb_token:
@@ -121,7 +121,7 @@ class UserAuthService:
         except Exception as exc:
             return None
 
-    def find_public_key(self, kid: str) -> Tuple[bool, Optional[dict]]:
+    def find_public_key(self, kid: str) -> tuple[bool, dict|None]:
         auth = config.auth
         url = f"https://cognito-idp.{auth.region}.amazonaws.com/{auth.identity_pool_id}/.well-known/jwks.json"
         public_keys = self.get_public_access_keys(url)
@@ -200,7 +200,7 @@ class UserAuthService:
 
         return payload.get("iss") == expected_issuer
 
-    def validate_access_token_and_return_credentials(self, access_token: str) -> Tuple[bool, Optional[str], bool]:
+    def validate_access_token_and_return_credentials(self, access_token: str) -> tuple[bool, str|None, bool]:
         valid_token, user_sub_id, current_user = False, None, None
         try:
             headers = jwt.get_unverified_header(access_token)
